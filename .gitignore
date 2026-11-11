@@ -1,0 +1,14 @@
+.pio/
+.vscode/
+
+# Respaldos de firmware (pueden contener datos del dispositivo, ej. Wi-Fi)
+*.bin
+backups/
+
+# Entornos virtuales de Python
+venv*/
+.venv/
+
+# Secretos
+secrets.h
+.env
