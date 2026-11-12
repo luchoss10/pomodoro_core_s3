@@ -1,319 +1,222 @@
 #include <M5CoreS3.h>
-#include <time.h>
+#include "config.h"
+#include "orientation.h"
+#include "pomodoro.h"
+#include "settings.h"
+#include "sound.h"
+#include "timesync.h"
+#include "ui.h"
 
-// Estados de la aplicación
-enum class AppState {
-    CLOCK,
-    CALENDAR,
-    POMODORO,
-    SETTINGS
-};
+static AppState    state = AppState::CLOCK;
+static Settings    settings;
+static Pomodoro    pomodoro;
+static Orientation lastOrientation = Orientation::Base;
+static bool        needsRedraw = true;
+static uint32_t    lastTick = 0;
+static int         lastMinute = -1;   // modo ahorro: minuto mostrado
+static int         lastKey = -1;   // lo último que se dibujó (segundo del reloj o del Pomodoro)
 
-AppState currentState = AppState::CLOCK;
-bool needsRedraw = true;
-
-// Variables del Pomodoro
-int shortWorkMin = 15;
-int longWorkMin = 30;
-int activeDurationMin = 15;
-unsigned long pomodoroStartTime = 0;
-bool pomodoroRunning = false;
-bool pomodoroDisabledByUser = false;
-
-// Variables de control de tiempo
-unsigned long lastSecondTick = 0;
-
-// Estructura para botones táctiles
-struct TouchButton {
-    int x, y, w, h;
-    const char* label;
-    uint16_t color;
-};
-
-// Botones de navegación inferior (320x240)
-TouchButton btnBottomLeft  = {10,  195, 95, 38, "CALEND.", DARKGREY};
-TouchButton btnBottomMid   = {112, 195, 95, 38, "AJUSTES", DARKGREY};
-TouchButton btnBottomRight = {215, 195, 95, 38, "IMU ON",  DARKGREEN};
-
-// Botones de Ajustes
-TouchButton btnShortMinus = {60,  70,  50, 40, "-", NAVY};
-TouchButton btnShortPlus  = {210, 70,  50, 40, "+", NAVY};
-TouchButton btnLongMinus  = {60,  130, 50, 40, "-", NAVY};
-TouchButton btnLongPlus   = {210, 130, 50, 40, "+", NAVY};
-
-bool isTouched(TouchButton btn, int tx, int ty) {
-    return (tx >= btn.x && tx <= (btn.x + btn.w) &&
-            ty >= btn.y && ty <= (btn.y + btn.h));
+// Solo se redibuja cuando cambia lo que se ve: cada dibujo cuesta ~50 ms de CPU.
+static bool contentChanged() {
+    static uint32_t lastCheck = 0;
+    const uint32_t now = millis();
+    switch (state) {
+        case AppState::CLOCK: {                  // el segundero: una vez por segundo
+            if (now - lastCheck < 100) return false;
+            lastCheck = now;
+            const int sec = CoreS3.Rtc.getDateTime().time.seconds;
+            if (sec == lastKey) return false;
+            lastKey = sec;
+            return true;
+        }
+        case AppState::POMODORO: {               // la cuenta regresiva: una vez por segundo
+            const int rem = (int)pomodoro.remainingSec();
+            if (rem == lastKey) return false;
+            lastKey = rem;
+            return true;
+        }
+        default:                                 // calendario y ajustes: solo si hay cambios o de respaldo
+            return now - lastTick >= IDLE_REDRAW_MS;
+    }
 }
 
-void drawButton(TouchButton btn) {
-    CoreS3.Display.fillRoundRect(btn.x, btn.y, btn.w, btn.h, 6, btn.color);
-    CoreS3.Display.drawRoundRect(btn.x, btn.y, btn.w, btn.h, 6, WHITE);
-    CoreS3.Display.setTextDatum(MC_DATUM);
-    CoreS3.Display.setTextColor(WHITE, btn.color);
-    CoreS3.Display.setTextSize(1);
-    CoreS3.Display.drawString(btn.label, btn.x + btn.w / 2, btn.y + btn.h / 2);
+static int minutesFor(Orientation o) {
+    return o == Orientation::Left ? settings.shortMin : settings.longMin;
 }
 
-void startPomodoro(int minutes) {
-    activeDurationMin = minutes;
-    pomodoroStartTime = millis();
-    pomodoroRunning = true;
-    currentState = AppState::POMODORO;
+// Hay un Pomodoro pausado en el lado contrario al que se giró
+static bool isBlocked(Orientation o) {
+    return settings.imuEnabled
+        && state != AppState::POMODORO && state != AppState::SETTINGS
+        && o != Orientation::Base
+        && pomodoro.state() == PomoState::Paused
+        && pomodoro.side() != o;
+}
+
+static void onOrientationChange(Orientation o) {
+    needsRedraw = true;
+    if (!settings.imuEnabled || state == AppState::SETTINGS) return;
+
+    // Al salir de su posición, la sesión en curso se pausa (conserva el progreso)
+    if (pomodoro.state() == PomoState::Running && pomodoro.side() != o) pomodoro.pause();
+
+    if (o == Orientation::Base) {
+        if (pomodoro.state() == PomoState::Finished) pomodoro.stop();
+        if (state == AppState::POMODORO) state = AppState::CLOCK;
+        return;
+    }
+
+    switch (pomodoro.state()) {
+        case PomoState::Idle:
+        case PomoState::Finished:
+            pomodoro.start(minutesFor(o), o);
+            state = AppState::POMODORO;
+            soundPlay(Sfx::Chime);
+            break;
+        case PomoState::Paused:
+            if (pomodoro.side() == o) { pomodoro.resume(); state = AppState::POMODORO; }
+            break;   // del otro lado: queda bloqueado (aviso)
+        case PomoState::Running:
+            break;
+    }
+}
+
+static void applyBrightness() {
+    CoreS3.Display.setBrightness(BRIGHTNESS_VALUES[settings.brightnessLevel]);
+}
+
+// Modo ahorro: solo la hora, brillo al mínimo, CPU a 80 MHz, sin sonido, IMU ni Wi-Fi
+static void enterLowPower() {
+    timeSyncAbort();   // si había una sincronización a medias, apaga el Wi-Fi
+    state = AppState::LOW_POWER;
+    lastMinute = -1;
+    setCpuFrequencyMhz(LOW_POWER_CPU_MHZ);
+    CoreS3.Display.setBrightness(LOW_POWER_BRIGHTNESS);
     needsRedraw = true;
 }
 
-void stopPomodoro() {
-    pomodoroRunning = false;
-    currentState = AppState::CLOCK;
+static void exitLowPower() {
+    setCpuFrequencyMhz(NORMAL_CPU_MHZ);
+    applyBrightness();
+    state = AppState::CLOCK;
     needsRedraw = true;
+    lastTick = 0;
 }
 
-void checkOrientationIMU() {
-    if (pomodoroDisabledByUser || currentState == AppState::SETTINGS) return;
-
-    float ax, ay, az;
-    CoreS3.Imu.getAccel(&ax, &ay, &az);
-
-    if (ax < -0.75f && !pomodoroRunning) {
-        startPomodoro(shortWorkMin);
-    } else if (ax > 0.75f && !pomodoroRunning) {
-        startPomodoro(longWorkMin);
-    } else if (abs(ax) < 0.35f && pomodoroRunning) {
-        stopPomodoro();
+static void lowPowerLoop() {
+    static uint32_t lastCheck = 0;
+    if (millis() - lastCheck >= 1000) {
+        lastCheck = millis();
+        const int mi = CoreS3.Rtc.getDateTime().time.minutes;
+        if (mi != lastMinute) { lastMinute = mi; needsRedraw = true; }   // una vez por minuto
     }
-}
-
-void drawClockView() {
-    auto dt = CoreS3.Rtc.getDateTime();
-    char timeStr[16];
-    char dateStr[16];
-
-    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", dt.time.hours, dt.time.minutes, dt.time.seconds);
-    snprintf(dateStr, sizeof(dateStr), "%02d/%02d/%04d", dt.date.date, dt.date.month, dt.date.year);
-
-    CoreS3.Display.setTextDatum(MC_DATUM);
-    CoreS3.Display.setTextColor(CYAN, BLACK);
-    CoreS3.Display.setTextSize(3);
-    CoreS3.Display.drawString(timeStr, 160, 85);
-
-    CoreS3.Display.setTextColor(LIGHTGREY, BLACK);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString(dateStr, 160, 135);
-}
-
-// Calcula el día de la semana (0=Dom ... 6=Sáb) para el día 1 del mes
-int getFirstDayOfMonth(int year, int month) {
-    struct tm time_in = {0};
-    time_in.tm_year = year - 1900;
-    time_in.tm_mon = month - 1;
-    time_in.tm_mday = 1;
-    mktime(&time_in);
-    return time_in.tm_wday;
-}
-
-int getDaysInMonth(int year, int month) {
-    const int daysPerMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))) {
-        return 29;
+    if (needsRedraw) {
+        needsRedraw = false;
+        uiDraw(state, settings, pomodoro, Orientation::Base, false);
     }
-    return daysPerMonth[month - 1];
+    delay(100);
 }
 
-void drawCalendarView() {
-    auto dt = CoreS3.Rtc.getDateTime();
-    CoreS3.Display.setTextDatum(MC_DATUM);
-    CoreS3.Display.setTextColor(YELLOW, BLACK);
-    CoreS3.Display.setTextSize(2);
+static void handleTouch() {
+    auto t = CoreS3.Touch.getDetail();
+    if (!t.wasPressed()) return;
 
-    char header[24];
-    snprintf(header, sizeof(header), "MES: %02d / %04d", dt.date.month, dt.date.year);
-    CoreS3.Display.drawString(header, 160, 22);
-
-    const char* days[] = {"D", "L", "M", "X", "J", "V", "S"};
-    CoreS3.Display.setTextSize(1);
-    for (int i = 0; i < 7; i++) {
-        CoreS3.Display.setTextColor(ORANGE, BLACK);
-        CoreS3.Display.drawString(days[i], 35 + i * 41, 48);
-    }
-
-    int startCol = getFirstDayOfMonth(dt.date.year, dt.date.month);
-    int totalDays = getDaysInMonth(dt.date.year, dt.date.month);
-    int dayCounter = 1;
-
-    for (int row = 0; row < 6; row++) {
-        for (int col = 0; col < 7; col++) {
-            if (row == 0 && col < startCol) continue;
-            if (dayCounter > totalDays) break;
-
-            int x = 35 + col * 41;
-            int y = 70 + row * 20;
-
-            if (dayCounter == dt.date.date) {
-                CoreS3.Display.fillCircle(x, y, 8, BLUE);
-                CoreS3.Display.setTextColor(WHITE, BLUE);
-            } else {
-                CoreS3.Display.setTextColor(WHITE, BLACK);
+    switch (uiHit(t.x, t.y)) {
+        case UiButton::Calendar:
+            state = (state == AppState::CLOCK) ? AppState::CALENDAR : AppState::CLOCK;
+            break;
+        case UiButton::Settings:
+            state = (state == AppState::SETTINGS) ? AppState::CLOCK : AppState::SETTINGS;
+            break;
+        case UiButton::Imu:
+            settings.imuEnabled = !settings.imuEnabled;
+            break;
+        case UiButton::Restart:
+            pomodoro.restart();      // vuelve al tiempo completo y arranca solo
+            soundPlay(Sfx::Cancel);
+            break;
+        case UiButton::Stop:
+            pomodoro.stop();         // descarta la sesión y libera el otro lado
+            state = AppState::CLOCK;
+            soundPlay(Sfx::Cancel);
+            break;
+        case UiButton::VolMinus:
+        case UiButton::VolPlus: {
+            const int d = (uiHit(t.x, t.y) == UiButton::VolPlus) ? 1 : -1;
+            const int lv = settings.volumeLevel + d;
+            if (lv >= 0 && lv < SOUND_LEVELS) {
+                settings.volumeLevel = lv;
+                soundSetLevel(lv);
+                soundPlay(Sfx::Chime);   // muestra el nivel elegido (en silencio no suena)
             }
-            CoreS3.Display.drawNumber(dayCounter, x, y);
-            dayCounter++;
+            break;
         }
-    }
-}
-
-void drawPomodoroView() {
-    unsigned long elapsedSec = (millis() - pomodoroStartTime) / 1000;
-    long totalSec = activeDurationMin * 60L;
-    long remainingSec = totalSec - elapsedSec;
-
-    if (remainingSec <= 0) {
-        remainingSec = 0;
-    }
-
-    int mins = remainingSec / 60;
-    int secs = remainingSec % 60;
-
-    char pomoStr[10];
-    snprintf(pomoStr, sizeof(pomoStr), "%02d:%02d", mins, secs);
-
-    CoreS3.Display.setTextDatum(MC_DATUM);
-    CoreS3.Display.setTextColor(GREENYELLOW, BLACK);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("SESION EN CURSO", 160, 45);
-
-    CoreS3.Display.setTextColor(WHITE, BLACK);
-    CoreS3.Display.setTextSize(4);
-    CoreS3.Display.drawString(pomoStr, 160, 105);
-
-    int barWidth = map(remainingSec, 0, totalSec, 0, 256);
-    CoreS3.Display.drawRect(30, 150, 260, 16, WHITE);
-    CoreS3.Display.fillRect(32, 152, barWidth, 12, GREEN);
-    CoreS3.Display.fillRect(32 + barWidth, 152, 256 - barWidth, 12, BLACK);
-}
-
-void drawSettingsView() {
-    CoreS3.Display.setTextDatum(MC_DATUM);
-    CoreS3.Display.setTextColor(WHITE, BLACK);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("AJUSTAR TIEMPOS", 160, 25);
-
-    CoreS3.Display.setTextSize(1);
-    CoreS3.Display.drawString("IZQ (MIN)", 160, 58);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawNumber(shortWorkMin, 160, 90);
-    drawButton(btnShortMinus);
-    drawButton(btnShortPlus);
-
-    CoreS3.Display.setTextSize(1);
-    CoreS3.Display.drawString("DER (MIN)", 160, 118);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawNumber(longWorkMin, 160, 150);
-    drawButton(btnLongMinus);
-    drawButton(btnLongPlus);
-}
-
-void drawNavigationBar() {
-    btnBottomLeft.label  = (currentState == AppState::CALENDAR) ? "RELOJ" : "CALEND.";
-    btnBottomMid.label   = (currentState == AppState::SETTINGS) ? "VOLVER" : "AJUSTES";
-    
-    if (pomodoroRunning) {
-        btnBottomRight.label = "SALIR POMO";
-        btnBottomRight.color = RED;
-    } else {
-        btnBottomRight.label = pomodoroDisabledByUser ? "IMU OFF" : "IMU ON";
-        btnBottomRight.color = pomodoroDisabledByUser ? DARKGREY : DARKGREEN;
-    }
-
-    drawButton(btnBottomLeft);
-    drawButton(btnBottomMid);
-    drawButton(btnBottomRight);
-}
-
-void handleTouch() {
-    auto touch = CoreS3.Touch.getDetail();
-    if (!touch.wasPressed()) return;
-
-    int tx = touch.x;
-    int ty = touch.y;
-
-    if (isTouched(btnBottomLeft, tx, ty)) {
-        if (pomodoroRunning) stopPomodoro();
-        currentState = (currentState == AppState::CLOCK) ? AppState::CALENDAR : AppState::CLOCK;
-        needsRedraw = true;
-    } else if (isTouched(btnBottomMid, tx, ty)) {
-        if (pomodoroRunning) stopPomodoro();
-        currentState = (currentState == AppState::SETTINGS) ? AppState::CLOCK : AppState::SETTINGS;
-        needsRedraw = true;
-    } else if (isTouched(btnBottomRight, tx, ty)) {
-        if (pomodoroRunning) {
-            stopPomodoro();
-            pomodoroDisabledByUser = true;
-        } else {
-            pomodoroDisabledByUser = !pomodoroDisabledByUser;
+        case UiButton::BrightMinus:
+        case UiButton::BrightPlus: {
+            const int d = (uiHit(t.x, t.y) == UiButton::BrightPlus) ? 1 : -1;
+            const int lv = settings.brightnessLevel + d;
+            if (lv >= 0 && lv < BRIGHTNESS_LEVELS) {
+                settings.brightnessLevel = lv;
+                applyBrightness();   // se ve al instante
+            }
+            break;
         }
-        needsRedraw = true;
+        case UiButton::LowPower:     enterLowPower(); break;
+        case UiButton::ExitLowPower: exitLowPower();  break;
+        case UiButton::ShortMinus: if (settings.shortMin > 5)  settings.shortMin -= POMODORO_STEP_MIN; break;
+        case UiButton::ShortPlus:  if (settings.shortMin < 60) settings.shortMin += POMODORO_STEP_MIN; break;
+        case UiButton::LongMinus:  if (settings.longMin  > 10) settings.longMin  -= POMODORO_STEP_MIN; break;
+        case UiButton::LongPlus:   if (settings.longMin  < 90) settings.longMin  += POMODORO_STEP_MIN; break;
+        default: return;
     }
-
-    if (currentState == AppState::SETTINGS) {
-        if (isTouched(btnShortMinus, tx, ty) && shortWorkMin > 5) {
-            shortWorkMin -= 5;
-            needsRedraw = true;
-        } else if (isTouched(btnShortPlus, tx, ty) && shortWorkMin < 60) {
-            shortWorkMin += 5;
-            needsRedraw = true;
-        } else if (isTouched(btnLongMinus, tx, ty) && longWorkMin > 10) {
-            longWorkMin -= 5;
-            needsRedraw = true;
-        } else if (isTouched(btnLongPlus, tx, ty) && longWorkMin < 90) {
-            longWorkMin += 5;
-            needsRedraw = true;
-        }
-    }
+    needsRedraw = true;
 }
 
 void setup() {
+    setCpuFrequencyMhz(NORMAL_CPU_MHZ);   // 160 MHz sobra para esta app y ahorra batería
     auto cfg = M5.config();
     CoreS3.begin(cfg);
     Serial.begin(115200);
-
-    CoreS3.Display.setRotation(0);
-    CoreS3.Display.fillScreen(BLACK);
-
-    // Fecha y hora inicial: 10 de noviembre de 2026, 22:06:00
-    CoreS3.Rtc.setDateTime({{2026, 11, 10}, {22, 16, 0}});
+    Serial.setTxTimeoutMs(0);   // no bloquear el loop si nadie lee el puerto serie
+    uiInit();
+    applyBrightness();
+    soundInit(settings.volumeLevel);
+    timeSyncInit();   // el RTC conserva la hora entre arranques; NTP la corrige en segundo plano
 }
 
 void loop() {
     CoreS3.update();
 
     handleTouch();
-    checkOrientationIMU();
 
-    if (needsRedraw) {
-        CoreS3.Display.fillScreen(BLACK);
-        drawNavigationBar();
+    if (state == AppState::LOW_POWER) { lowPowerLoop(); return; }
+
+    const Orientation o = updateOrientation();
+
+    if (o != lastOrientation) {
+        lastOrientation = o;
+        onOrientationChange(o);
+    }
+
+    const PomoState before = pomodoro.state();
+    pomodoro.update();
+    if (before == PomoState::Running && pomodoro.state() == PomoState::Finished) {
+        soundPlay(Sfx::Chime);
+        needsRedraw = true;
+    }
+    soundUpdate();
+    timeSyncUpdate();
+
+    // La interfaz solo rota en la pantalla del Pomodoro y en el aviso de bloqueo;
+    // el resto del tiempo usa la base.
+    const bool blocked = isBlocked(o);
+    if (uiSetOrientation((state == AppState::POMODORO || blocked) ? o : Orientation::Base)) needsRedraw = true;
+
+    if (needsRedraw || contentChanged()) {
+        lastTick = millis();
         needsRedraw = false;
-        lastSecondTick = 0;
+        uiDraw(state, settings, pomodoro, o, blocked);
     }
 
-    if (millis() - lastSecondTick >= 1000 || lastSecondTick == 0) {
-        lastSecondTick = millis();
-
-        switch (currentState) {
-            case AppState::CLOCK:
-                drawClockView();
-                break;
-            case AppState::CALENDAR:
-                drawCalendarView();
-                break;
-            case AppState::POMODORO:
-                drawPomodoroView();
-                break;
-            case AppState::SETTINGS:
-                drawSettingsView();
-                break;
-        }
-    }
-
-    delay(15);
+    delay(LOOP_DELAY_MS);
 }
