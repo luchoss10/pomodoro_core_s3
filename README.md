@@ -170,10 +170,13 @@ Con el SSID vacío no se usa Wi-Fi y el reloj solo depende del RTC. Las credenci
 - **El giro a la izquierda activa el lado equivocado:** el signo del eje X es el contrario; invierte los signos en `classify()` (`orientation.cpp`).
 - El monitor serial imprime `ax=.. ay=.. az=.. orient=N` cada segundo (0 base, 1 izquierda, 2 derecha).
 
-## Pendiente
+## Limitaciones conocidas y mejoras opcionales
 
-- Guardar en NVS el progreso de un Pomodoro pausado (hoy se pierde al reiniciar el equipo).
-- Botón para reiniciar (no solo detener) un Pomodoro pausado desde la base.
+El proyecto cubre todo lo planeado. Lo que sigue no está hecho y es opcional:
+
+- **El progreso de un Pomodoro pausado vive en RAM:** si se reinicia el equipo, la sesión se pierde. Los ajustes (minutos, volumen y brillo) sí se guardan en NVS. Guardar el progreso exigiría decidir qué hacer con el tiempo que estuvo apagado.
+- **Un Pomodoro pausado solo se puede detener, no reiniciar, desde la base.** Para reiniciarlo hay que girar de vuelta a su lado y pulsar REINICIAR.
+- **El estado IMU ON/OFF no se guarda:** siempre arranca en ON.
 
 ## Respaldo del firmware de fábrica
 
