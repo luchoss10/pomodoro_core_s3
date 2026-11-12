@@ -121,6 +121,8 @@ static void handleTouch() {
     auto t = CoreS3.Touch.getDetail();
     if (!t.wasPressed()) return;
 
+    bool settingsChanged = false;   // ajuste modificado: se guarda en NVS al final
+
     switch (uiHit(t.x, t.y)) {
         case UiButton::Calendar:
             state = (state == AppState::CLOCK) ? AppState::CALENDAR : AppState::CLOCK;
@@ -148,6 +150,7 @@ static void handleTouch() {
                 settings.volumeLevel = lv;
                 soundSetLevel(lv);
                 soundPlay(Sfx::Chime);   // muestra el nivel elegido (en silencio no suena)
+                settingsChanged = true;
             }
             break;
         }
@@ -158,17 +161,19 @@ static void handleTouch() {
             if (lv >= 0 && lv < BRIGHTNESS_LEVELS) {
                 settings.brightnessLevel = lv;
                 applyBrightness();   // se ve al instante
+                settingsChanged = true;
             }
             break;
         }
         case UiButton::LowPower:     enterLowPower(); break;
         case UiButton::ExitLowPower: exitLowPower();  break;
-        case UiButton::ShortMinus: if (settings.shortMin > 5)  settings.shortMin -= POMODORO_STEP_MIN; break;
-        case UiButton::ShortPlus:  if (settings.shortMin < 60) settings.shortMin += POMODORO_STEP_MIN; break;
-        case UiButton::LongMinus:  if (settings.longMin  > 10) settings.longMin  -= POMODORO_STEP_MIN; break;
-        case UiButton::LongPlus:   if (settings.longMin  < 90) settings.longMin  += POMODORO_STEP_MIN; break;
+        case UiButton::ShortMinus: if (settings.shortMin > 5)  { settings.shortMin -= POMODORO_STEP_MIN; settingsChanged = true; } break;
+        case UiButton::ShortPlus:  if (settings.shortMin < 60) { settings.shortMin += POMODORO_STEP_MIN; settingsChanged = true; } break;
+        case UiButton::LongMinus:  if (settings.longMin  > 10) { settings.longMin  -= POMODORO_STEP_MIN; settingsChanged = true; } break;
+        case UiButton::LongPlus:   if (settings.longMin  < 90) { settings.longMin  += POMODORO_STEP_MIN; settingsChanged = true; } break;
         default: return;
     }
+    if (settingsChanged) settingsSave(settings);
     needsRedraw = true;
 }
 
@@ -178,6 +183,7 @@ void setup() {
     CoreS3.begin(cfg);
     Serial.begin(115200);
     Serial.setTxTimeoutMs(0);   // no bloquear el loop si nadie lee el puerto serie
+    settingsLoad(settings);   // minutos, volumen y brillo guardados
     uiInit();
     applyBrightness();
     soundInit(settings.volumeLevel);

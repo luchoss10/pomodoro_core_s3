@@ -22,7 +22,7 @@ En la pantalla del Pomodoro hay un cuadro pequeño con una flecha y un icono de 
 
 Hay **una sola sesión a la vez**, asociada al lado que la inició.
 
-- Mientras está pausada, la base muestra arriba `POMO 15 PAUSADO 08:12`.
+- Mientras está pausada, el reloj muestra `POMO 15 PAUSADO 08:12` y, sobre el botón CALEND., un botón **DETENER POMO** que descarta la sesión y libera el otro lado sin tener que girar de vuelta.
 - Si el tiempo llega a 00:00, la sesión queda como cumplida. Al volver a la base se cierra y ya se puede iniciar el otro lado.
 - Si se gira de un lado a otro sin pasar por la base, la sesión del primer lado también se pausa.
 - El progreso vive en RAM: se pierde al reiniciar el equipo.
@@ -58,9 +58,10 @@ No usa sueño ligero, para no perder el táctil.
 
 **En la base (reloj y calendario):**
 - **CALEND. / RELOJ:** alterna entre reloj y calendario.
-- **AJUSTES / VOLVER:** abre o cierra los ajustes: minutos de cada Pomodoro (pasos de 5; izquierda 10 a 90, derecha 5 a 60), volumen del sonido (5 niveles) y **brillo** de la pantalla (5 niveles, de 20 % a 100 %; se aplica al instante). Una sesión pausada conserva los minutos con los que empezó.
+- **AJUSTES / VOLVER:** abre o cierra los ajustes: minutos de cada Pomodoro (pasos de 5; izquierda 10 a 90, derecha 5 a 60), volumen del sonido (5 niveles) y **brillo** de la pantalla (5 niveles, de 20 % a 100 %; por defecto 60 %; se aplica al instante). Una sesión pausada conserva los minutos con los que empezó.
 - **IMU ON / IMU OFF:** activa o desactiva el inicio automático por giro.
 - **MODO AHORRO:** solo en el reloj; ver la sección anterior.
+- **DETENER POMO:** solo en el reloj y solo si hay un Pomodoro pausado; descarta la sesión.
 
 **En la pantalla del Pomodoro:**
 - **REINICIAR:** vuelve al tiempo completo y arranca solo.
@@ -74,7 +75,7 @@ pomodoro_core_s3/
 ├── src/
 │   ├── main.cpp          # setup() y loop(): coordina los módulos
 │   ├── config.h          # Constantes: umbrales, minutos por defecto, rotaciones
-│   ├── settings.h        # Ajustes en ejecución (minutos, IMU on/off)
+│   ├── settings.h/.cpp   # Ajustes (minutos, volumen, brillo) y su guardado en NVS
 │   ├── orientation.h/.cpp# Lectura del IMU y orientación estable
 │   ├── pomodoro.h/.cpp   # Lógica del temporizador
 │   ├── sound.h/.cpp      # Sonidos del altavoz
@@ -97,7 +98,9 @@ Cada módulo tiene una sola responsabilidad.
 - `ROT_BASE` y `ROT_OFFSET_LEFT/RIGHT`: rotación de pantalla (0 a 3).
 
 ### `settings.h`
-Estructura `Settings` con los minutos de cada lado y si el IMU está activo.
+Estructura `Settings` con los minutos de cada lado, el volumen, el brillo y si el IMU está activo.
+
+**Persistencia (NVS):** los minutos de cada Pomodoro, el nivel de volumen y el de brillo se guardan en la memoria no volátil cada vez que se cambian en Ajustes, y se cargan al arrancar (`settingsLoad`). Cada valor se valida al cargarlo: si está fuera de rango, se usa el valor por defecto. El estado del IMU (ON/OFF) no se guarda: siempre arranca en ON.
 
 ### `orientation`
 - `classify(ax, actual)`: devuelve `Base`, `Left` o `Right` a partir del eje X, con histéresis (entre los dos umbrales conserva el estado anterior).
@@ -116,7 +119,7 @@ Guarda el tiempo acumulado en tramos anteriores, y por eso `pause()` y `resume()
 `soundPlay(Sfx::Chime | Sfx::Cancel)` encola una melodía corta de tres notas y `soundUpdate()` la avanza en cada vuelta del `loop`, sin bloquear. Cinco niveles de volumen (`SOUND_VOLUMES` en `config.h`); el nivel 0 silencia.
 
 ### `timesync`
-Mantiene la hora del reloj. `timeSyncInit()` solo corrige el RTC si no tiene hora válida (usa la última hora guardada en NVS o la fecha de compilación). `timeSyncUpdate()` se llama en cada vuelta del `loop` y, **sin bloquear**, conecta el Wi-Fi, pide la hora por NTP, la guarda en el RTC y apaga el Wi-Fi. Se repite cada 12 h. Si falla, reintenta con espera creciente (a los 30 s, 1 min y 2 min); si el último intento también falla, no toca la hora (se conserva la guardada) y espera al siguiente ciclo.
+Mantiene la hora del reloj. `timeSyncInit()` solo corrige el RTC si no tiene hora válida (usa la última hora guardada en NVS o la fecha de compilación). `timeSyncUpdate()` se llama en cada vuelta del `loop` y, **sin bloquear**, conecta el Wi-Fi, pide la hora por NTP, la guarda en el RTC y apaga el Wi-Fi. Se repite cada 12 h. Si falla, reintenta con espera creciente (a los 30 s, 1 min y 2 min); si el último intento también falla, no toca la hora (se conserva la guardada) y espera al siguiente ciclo. Mientras espera, el estado bajo la fecha muestra una **cuenta regresiva** hasta el próximo intento (por ejemplo `Wi-Fi: no conecta (cod 6) - reintento en 27s`, o `Sin NTP: hora guardada - prox. en 11h 59m` si se agotaron los reintentos).
 
 ### `ui`
 Todo el dibujo, en un buffer (`M5Canvas`) que se envía de una vez, sin parpadeo.
@@ -157,7 +160,7 @@ El RTC del CoreS3 conserva la hora entre arranques mientras la batería tenga ca
 2. Completa `WIFI_SSID` y `WIFI_PASSWORD`. Debe ser una red de **2.4 GHz con WPA o WPA2 personal**; no funcionan WPA2-Enterprise ni portales cautivos (un hotspot del teléfono sirve).
 3. Flashea. Al arrancar se sincroniza en unos segundos, y luego cada 12 h.
 
-Con el SSID vacío no se usa Wi-Fi y el reloj solo depende del RTC.
+Con el SSID vacío no se usa Wi-Fi y el reloj solo depende del RTC. Las credenciales se usan solo en memoria (`WiFi.persistent(false)`): el equipo no las guarda en su flash, aunque sí quedan dentro del firmware compilado, así que no compartas `firmware.bin`.
 
 **Respaldo sin internet:** cada 30 min y tras cada sincronización se guarda la última hora conocida en la memoria no volátil (NVS). Si el RTC pierde la hora (por ejemplo, batería agotada), el equipo arranca con la mayor entre esa hora guardada y la fecha de compilación. Esa hora va atrasada lo que estuvo apagado el equipo, hasta que haya Wi-Fi para corregirla. El ESP32 por sí solo no cuenta el tiempo apagado; solo el RTC lo hace, y solo con batería. El monitor serial indica `[hora] sincronizada por NTP`.
 
@@ -169,8 +172,8 @@ Con el SSID vacío no se usa Wi-Fi y el reloj solo depende del RTC.
 
 ## Pendiente
 
-- Guardar en NVS los ajustes (incluidos volumen y brillo) y el progreso del Pomodoro (se pierden al reiniciar).
-- Botón para detener o reiniciar un Pomodoro pausado desde la base, sin tener que girar al lado original.
+- Guardar en NVS el progreso de un Pomodoro pausado (hoy se pierde al reiniciar el equipo).
+- Botón para reiniciar (no solo detener) un Pomodoro pausado desde la base.
 
 ## Respaldo del firmware de fábrica
 

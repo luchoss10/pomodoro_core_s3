@@ -44,7 +44,7 @@ constexpr uint32_t TIME_SAVE_MS = 30UL * 60 * 1000;           // guardar la últ
 
 // ---- Pantalla y energía ----
 constexpr int     BRIGHTNESS_LEVELS        = 5;
-constexpr int     BRIGHTNESS_DEFAULT_LEVEL = 4;   // 100 %
+constexpr int     BRIGHTNESS_DEFAULT_LEVEL = 2;   // 60 % (valor por defecto; el usuario puede cambiarlo en Ajustes)
 constexpr uint8_t BRIGHTNESS_VALUES[BRIGHTNESS_LEVELS] = {51, 102, 153, 204, 255};   // 20 %..100 %
 constexpr uint8_t LOW_POWER_BRIGHTNESS = BRIGHTNESS_VALUES[0];   // el nivel más bajo (20 %) en modo ahorro
 constexpr int     LOW_POWER_CPU_MHZ    = 80;      // mínimo compatible con Wi-Fi

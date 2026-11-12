@@ -87,7 +87,7 @@ static void drawHomeBox(int x, int y, bool arrowLeft) {
     else           { drawArrow(x + w - 16, y + h / 2, false, CYAN);  drawHouse(x + 8, y + h / 2 - 7, WHITE); }
 }
 
-static void drawNavigationBar(AppState state, const Settings& s) {
+static void drawNavigationBar(AppState state, const Settings& s, const Pomodoro& p) {
     const int w = cv.width(), h = cv.height();
     const int gap = 7, bh = 38;
     const int y = h - 45;
@@ -107,17 +107,25 @@ static void drawNavigationBar(AppState state, const Settings& s) {
 
     // Sobre el botón IMU (forma de "L" acostada): acceso al modo ahorro, solo en el reloj
     if (state == AppState::CLOCK) drawButton(10 + 2 * (bw + gap), y - 6 - 34, bw, 34, "MODO AHORRO", NAVY, UiButton::LowPower);
+
+    // Sobre el botón CALEND. (el otro brazo de la "L"): descartar un Pomodoro pausado desde la base
+    if (state == AppState::CLOCK && p.state() == PomoState::Paused) drawButton(10, y - 6 - 34, bw, 34, "DETENER POMO", RED, UiButton::Stop);
 }
 
-// Indicador discreto (abajo a la izquierda) de que hay un Pomodoro pausado
-static void drawPausedChip(const Pomodoro& p) {
+// Indicador discreto de que hay un Pomodoro pausado
+static void drawPausedChip(const Pomodoro& p, AppState state) {
     const uint32_t rem = p.remainingSec();
     char buf[32];
     snprintf(buf, sizeof(buf), "POMO %d PAUSADO %02u:%02u", p.minutes(), (unsigned)(rem / 60), (unsigned)(rem % 60));
-    cv.setTextDatum(ML_DATUM);
     cv.setTextColor(ORANGE, BLACK);
     cv.setTextSize(1);
-    cv.drawString(buf, 10, 186);   // abajo a la izquierda, sobre la barra de botones
+    if (state == AppState::CLOCK) {            // centrado bajo la barra de indicadores
+        cv.setTextDatum(MC_DATUM);
+        cv.drawString(buf, cv.width() / 2, 44);
+    } else {                                   // calendario: abajo a la izquierda, sobre la barra de botones
+        cv.setTextDatum(ML_DATUM);
+        cv.drawString(buf, 10, 186);
+    }
 }
 
 // Pantalla de aviso (a pantalla completa y con diseño relativo, para que
@@ -227,11 +235,11 @@ static void drawClockView(const Settings& s) {
     cv.drawString(timeStr, 160, 85);
     cv.setTextColor(LIGHTGREY, BLACK);
     cv.setTextSize(2);
-    cv.drawString(dateStr, 160, 135);
+    cv.drawString(dateStr, 160, 133);
     // Estado de la sincronización de hora (útil para diagnosticar el Wi-Fi)
     cv.setTextSize(1);
     cv.setTextColor(DARKGREY, BLACK);
-    cv.drawString(timeSyncStatus(), 160, 149);
+    cv.drawString(timeSyncStatus(), 160, 147);
     drawHints(s);
 }
 
@@ -383,8 +391,8 @@ void uiDraw(AppState state, const Settings& s, const Pomodoro& p, Orientation o,
         case AppState::POMODORO: drawPomodoroView(p, o); break;
         default: break;
     }
-    if (state != AppState::POMODORO && state != AppState::SETTINGS && p.state() == PomoState::Paused) drawPausedChip(p);
+    if (state != AppState::POMODORO && state != AppState::SETTINGS && p.state() == PomoState::Paused) drawPausedChip(p, state);
     if (state == AppState::CLOCK || state == AppState::CALENDAR || state == AppState::POMODORO) drawIndicators(16, s);
-    drawNavigationBar(state, s);
+    drawNavigationBar(state, s, p);
     cv.pushSprite(0, 0);
 }

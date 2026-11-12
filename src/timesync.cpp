@@ -14,6 +14,8 @@ static uint32_t t0     = 0;
 static uint32_t nextAt = 0;   // millis() a partir del cual se intenta
 static char     statusText[64] = "Hora: solo RTC";
 static uint8_t  failures = 0;   // fallos consecutivos del ciclo de reintentos actual
+static bool     countdown = false;   // true: se muestra la cuenta regresiva hasta el próximo intento
+static bool     gaveUp    = false;   // true: se agotaron los reintentos (próximo intento en el ciclo largo)
 
 static void setStatus(const char* t) {
     if (strcmp(statusText, t) == 0) return;   // solo si cambia
@@ -21,7 +23,20 @@ static void setStatus(const char* t) {
     if (Serial) Serial.printf("[hora] %s\n", t);
 }
 
-const char* timeSyncStatus() { return statusText; }
+// Texto de estado; si hay un intento programado, añade la cuenta regresiva (se actualiza sola).
+const char* timeSyncStatus() {
+    if (!countdown) return statusText;
+    static char out[80];
+    int32_t ms = (int32_t)(nextAt - millis());
+    if (ms < 0) ms = 0;
+    const unsigned s = (unsigned)((ms + 999) / 1000);   // redondeo hacia arriba
+    char t[16];
+    if (s < 100)       snprintf(t, sizeof(t), "%us", s);
+    else if (s < 3600) snprintf(t, sizeof(t), "%um %02us", s / 60, s % 60);
+    else               snprintf(t, sizeof(t), "%uh %02um", s / 3600, (s % 3600) / 60);
+    snprintf(out, sizeof(out), "%s - %s %s", statusText, gaveUp ? "prox. en" : "reintento en", t);
+    return out;
+}
 
 // ---- Conversión fecha <-> segundos, independiente de la zona horaria del sistema ----
 // (la hora que guardamos es siempre la hora local de Bogotá)
@@ -91,6 +106,7 @@ static void finish(bool ok, const char* msg) {
 
     if (ok) {
         failures = 0;
+        countdown = false;
         nextAt = millis() + NTP_RESYNC_MS;
         saveLastKnownTime();
         setStatus(msg);
@@ -98,17 +114,17 @@ static void finish(bool ok, const char* msg) {
     }
 
     // Fallo: nunca se escribe en el RTC; se conserva la hora almacenada.
-    char full[64];
+    countdown = true;                      // el estado muestra la cuenta regresiva al próximo intento
     if (failures < NTP_BACKOFF_COUNT) {
-        const uint32_t wait = NTP_BACKOFF_MS[failures++];
-        nextAt = millis() + wait;
-        snprintf(full, sizeof(full), "%s - reintento en %us", msg, (unsigned)(wait / 1000));
+        nextAt = millis() + NTP_BACKOFF_MS[failures++];
+        gaveUp = false;
+        setStatus(msg);
     } else {
         failures = 0;                      // se agotaron los reintentos: espera al siguiente ciclo
         nextAt = millis() + NTP_RESYNC_MS;
-        snprintf(full, sizeof(full), "Sin NTP: se usa la hora guardada");
+        gaveUp = true;
+        setStatus("Sin NTP: hora guardada");
     }
-    setStatus(full);
 }
 
 void timeSyncInit() {
@@ -130,11 +146,13 @@ void timeSyncUpdate() {
     switch (phase) {
         case Phase::Wait:
             if ((int32_t)(millis() - nextAt) < 0) return;
+            WiFi.persistent(false);   // no guardar SSID ni contraseña en la flash del equipo
             WiFi.mode(WIFI_STA);
             WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);   // por defecto exige WPA2; algunos routers anuncian WPA
             WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
             t0 = millis();
             phase = Phase::Connecting;
+            countdown = false;
             setStatus("Conectando Wi-Fi...");
             break;
 
