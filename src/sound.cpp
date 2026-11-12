@@ -40,5 +40,15 @@ void soundPlay(Sfx s) {
 }
 
 void soundUpdate() {
-    if (seq && !CoreS3.Speaker.isPlaying()) playNext();
+    if (seq) {
+        if (!CoreS3.Speaker.isPlaying()) playNext();
+        return;
+    }
+    // Melodía terminada: apagar el altavoz para que el amplificador (AW88298) no consuma.
+    // El siguiente tone() lo vuelve a encender solo.
+    if (CoreS3.Speaker.isRunning() && !CoreS3.Speaker.isPlaying()) CoreS3.Speaker.end();
+}
+
+bool soundBusy() {
+    return seq != nullptr || CoreS3.Speaker.isPlaying();
 }

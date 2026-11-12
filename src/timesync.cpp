@@ -196,3 +196,7 @@ void timeSyncAbort() {
     phase  = Phase::Wait;
     nextAt = millis();   // se retoma en cuanto se vuelva a llamar a timeSyncUpdate()
 }
+
+bool timeSyncBusy() {
+    return phase != Phase::Wait;
+}

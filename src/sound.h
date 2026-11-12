@@ -9,3 +9,5 @@ void soundInit(int level);
 void soundSetLevel(int level);   // 0 = silencio .. SOUND_LEVELS-1
 void soundPlay(Sfx s);   // no bloquea: encola las notas
 void soundUpdate();      // llamar en cada loop para avanzar la melodía
+// true mientras suena una melodía (no se debe entrar en sueño ligero).
+bool soundBusy();

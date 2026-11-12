@@ -2,6 +2,7 @@
 #include "config.h"
 #include "orientation.h"
 #include "pomodoro.h"
+#include "power.h"
 #include "settings.h"
 #include "sound.h"
 #include "timesync.h"
@@ -14,6 +15,7 @@ static Orientation lastOrientation = Orientation::Base;
 static bool        needsRedraw = true;
 static uint32_t    lastTick = 0;
 static int         lastMinute = -1;   // modo ahorro: minuto mostrado
+static int         lpBrightness = -1; // modo ahorro: brillo aplicado (-1 = ninguno aún)
 static int         lastKey = -1;   // lo último que se dibujó (segundo del reloj o del Pomodoro)
 
 // Solo se redibuja cuando cambia lo que se ve: cada dibujo cuesta ~50 ms de CPU.
@@ -90,8 +92,8 @@ static void enterLowPower() {
     timeSyncAbort();   // si había una sincronización a medias, apaga el Wi-Fi
     state = AppState::LOW_POWER;
     lastMinute = -1;
+    lpBrightness = -1;   // el brillo según la hora se aplica en lowPowerLoop()
     setCpuFrequencyMhz(LOW_POWER_CPU_MHZ);
-    CoreS3.Display.setBrightness(LOW_POWER_BRIGHTNESS);
     needsRedraw = true;
 }
 
@@ -104,17 +106,17 @@ static void exitLowPower() {
 }
 
 static void lowPowerLoop() {
-    static uint32_t lastCheck = 0;
-    if (millis() - lastCheck >= 1000) {
-        lastCheck = millis();
-        const int mi = CoreS3.Rtc.getDateTime().time.minutes;
-        if (mi != lastMinute) { lastMinute = mi; needsRedraw = true; }   // una vez por minuto
-    }
+    const auto dt = CoreS3.Rtc.getDateTime();
+    if (dt.time.minutes != lastMinute) { lastMinute = dt.time.minutes; needsRedraw = true; }   // una vez por minuto
+    const int b = LP_BRIGHTNESS[lowPowerPeriod(dt.time.hours)];   // brillo según la franja horaria
+    if (b != lpBrightness) { lpBrightness = b; CoreS3.Display.setBrightness(b); }
     if (needsRedraw) {
         needsRedraw = false;
         uiDraw(state, settings, pomodoro, Orientation::Base, false);
     }
-    delay(100);
+    // Dormir hasta justo después del cambio de minuto; un toque (SALIR) despierta antes.
+    const uint32_t ms = (60 - dt.time.seconds) * 1000UL + 300;
+    powerSleep(ms, 100);
 }
 
 static void handleTouch() {
@@ -180,6 +182,7 @@ static void handleTouch() {
 void setup() {
     setCpuFrequencyMhz(NORMAL_CPU_MHZ);   // 160 MHz sobra para esta app y ahorra batería
     auto cfg = M5.config();
+    cfg.internal_mic = false;   // la app no usa el micrófono: no se inicializa (ahorra energía)
     CoreS3.begin(cfg);
     Serial.begin(115200);
     Serial.setTxTimeoutMs(0);   // no bloquear el loop si nadie lee el puerto serie
@@ -194,6 +197,7 @@ void loop() {
     CoreS3.update();
 
     handleTouch();
+    powerUpdate();
 
     if (state == AppState::LOW_POWER) { lowPowerLoop(); return; }
 
@@ -224,5 +228,7 @@ void loop() {
         uiDraw(state, settings, pomodoro, o, blocked);
     }
 
-    delay(LOOP_DELAY_MS);
+    // Con batería y sin nada en curso, la CPU duerme entre vueltas (el táctil la despierta).
+    if (soundBusy() || timeSyncBusy()) delay(LOOP_DELAY_MS);
+    else                               powerSleep(LOOP_SLEEP_MS, LOOP_DELAY_MS);
 }

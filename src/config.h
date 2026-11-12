@@ -45,12 +45,25 @@ constexpr uint32_t TIME_SAVE_MS = 30UL * 60 * 1000;           // guardar la últ
 // ---- Pantalla y energía ----
 constexpr int     BRIGHTNESS_LEVELS        = 5;
 constexpr int     BRIGHTNESS_DEFAULT_LEVEL = 2;   // 60 % (valor por defecto; el usuario puede cambiarlo en Ajustes)
-constexpr uint8_t BRIGHTNESS_VALUES[BRIGHTNESS_LEVELS] = {51, 102, 153, 204, 255};   // 20 %..100 %
-constexpr uint8_t LOW_POWER_BRIGHTNESS = BRIGHTNESS_VALUES[0];   // el nivel más bajo (20 %) en modo ahorro
+// La librería convierte el brillo en el voltaje de la luz de fondo (2.5 V con 1..22, hasta 3.3 V con 255),
+// así que los 5 niveles se reparten por todo ese rango real. La interfaz los muestra como 20 %..100 %.
+constexpr uint8_t BRIGHTNESS_VALUES[BRIGHTNESS_LEVELS] = {1, 64, 128, 192, 255};   // 2.5 / 2.7 / 2.9 / 3.1 / 3.3 V
+// Modo ahorro: brillo y color del texto según la hora (sin blanco en ninguna franja).
+// El brillo es siempre el del nivel 20 % de Ajustes (el mínimo real, 2.5 V); lo que cambia es el gris:
+//   Día    06:00-18:59 -> gris claro, para que se lea de día
+//   Tarde  19:00-21:59 -> gris medio (transición)
+//   Noche  22:00-05:59 -> gris oscuro
+constexpr int      LP_DAY_START_H     = 6;
+constexpr int      LP_EVENING_START_H = 19;
+constexpr int      LP_NIGHT_START_H   = 22;
+constexpr uint8_t  LP_BRIGHTNESS[3]   = {BRIGHTNESS_VALUES[0], BRIGHTNESS_VALUES[0], BRIGHTNESS_VALUES[0]};   // día, tarde, noche
+constexpr uint16_t LP_TEXT_COLOR[3]   = {0xC618, 0x8410, 0x4208};    // gris claro, medio, oscuro (RGB565)
+constexpr uint16_t COL_LP_LOW_BAT     = 0x7800;   // rojo oscuro: batería baja en modo ahorro
 constexpr int     LOW_POWER_CPU_MHZ    = 80;      // mínimo compatible con Wi-Fi
 constexpr int     NORMAL_CPU_MHZ       = 160;     // modo normal (el sistema arranca a 240)
 constexpr uint32_t BATTERY_READ_MS     = 5000;    // cada cuánto se lee la batería
 
 // ---- Ciclo principal ----
-constexpr uint32_t LOOP_DELAY_MS      = 30;       // pausa del loop (el táctil responde en < ~50 ms)
+constexpr uint32_t LOOP_DELAY_MS      = 30;       // pausa del loop con USB, o mientras suena algo o hay Wi-Fi
+constexpr uint32_t LOOP_SLEEP_MS      = 150;      // con batería: sueño ligero entre vueltas (el táctil lo despierta)
 constexpr uint32_t IDLE_REDRAW_MS     = 30000;    // calendario y ajustes: refresco de respaldo

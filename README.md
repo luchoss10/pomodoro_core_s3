@@ -47,18 +47,22 @@ En el reloj, el calendario y la pantalla del Pomodoro, arriba al centro, hay dos
 
 Botón **MODO AHORRO**, sobre el botón IMU, solo en la pantalla del reloj (forma de "L" acostada con la barra inferior). Muestra únicamente **HH:MM** en grande, sin segundos, con el indicador de batería arriba al centro, y:
 
-- Brillo en el nivel más bajo (20 %) y CPU a 80 MHz (en modo normal la CPU trabaja a 160 MHz; ver `NORMAL_CPU_MHZ` en `config.h`).
-- Se redibuja una vez por minuto (la batería se actualiza con él).
+- Brillo igual al nivel 20 % de Ajustes (el mínimo real, 2.5 V), para maximizar la autonomía. El color del texto cambia según la hora, siempre en gris (sin blanco):
+  - **Día (06:00-18:59):** gris claro, para leerlo de día.
+  - **Tarde (19:00-21:59):** gris medio.
+  - **Noche (22:00-05:59):** gris oscuro.
+  Las franjas, el brillo y los colores están en `config.h` (`LP_*`). CPU a 80 MHz (en modo normal trabaja a 160 MHz; ver `NORMAL_CPU_MHZ` en `config.h`).
+- Se redibuja una vez por minuto (la batería se actualiza con él) y, entre minutos, la CPU **duerme** (sueño ligero).
 - Sin sonido, sin IMU (no se inicia ningún Pomodoro) y sin Wi-Fi (si había una sincronización en curso se cancela; se retoma al salir).
 - El botón **SALIR** (esquina inferior derecha) vuelve al reloj y restaura el brillo elegido en Ajustes.
 
-No usa sueño ligero, para no perder el táctil.
+El sueño ligero no pierde el táctil: en el CoreS3 la señal del panel táctil llega al ESP32 por GPIO21 y lo despierta, así que SALIR responde al primer toque.
 
 ### Botones táctiles
 
 **En la base (reloj y calendario):**
 - **CALEND. / RELOJ:** alterna entre reloj y calendario.
-- **AJUSTES / VOLVER:** abre o cierra los ajustes: minutos de cada Pomodoro (pasos de 5; izquierda 10 a 90, derecha 5 a 60), volumen del sonido (5 niveles) y **brillo** de la pantalla (5 niveles, de 20 % a 100 %; por defecto 60 %; se aplica al instante). Una sesión pausada conserva los minutos con los que empezó.
+- **AJUSTES / VOLVER:** abre o cierra los ajustes: minutos de cada Pomodoro (pasos de 5; izquierda 10 a 90, derecha 5 a 60), volumen del sonido (5 niveles) y **brillo** de la pantalla (5 niveles, de 20 % a 100 %; por defecto 60 %; se aplica al instante). Arriba a la derecha muestra el voltaje y el porcentaje de la batería, para pruebas de descarga. Una sesión pausada conserva los minutos con los que empezó.
 - **IMU ON / IMU OFF:** activa o desactiva el inicio automático por giro.
 - **MODO AHORRO:** solo en el reloj; ver la sección anterior.
 - **DETENER POMO:** solo en el reloj y solo si hay un Pomodoro pausado; descarta la sesión.
@@ -80,6 +84,7 @@ pomodoro_core_s3/
 │   ├── pomodoro.h/.cpp   # Lógica del temporizador
 │   ├── sound.h/.cpp      # Sonidos del altavoz
 │   ├── timesync.h/.cpp   # Hora: RTC + sincronización NTP (Bogotá, UTC-5)
+│   ├── power.h/.cpp      # Energía: sueño ligero, salida de 5 V
 │   ├── secrets.example.h # Plantilla de credenciales Wi-Fi (secrets.h no se sube)
 │   └── ui.h/.cpp         # Vistas, botones táctiles, rotación e indicadores
 ├── docs/
@@ -128,7 +133,7 @@ Todo el dibujo, en un buffer (`M5Canvas`) que se envía de una vez, sin parpadeo
 - `uiHit(x, y)`: devuelve el botón tocado según el último dibujo.
 
 ### `main.cpp`
-Máquina de estados de pantalla (`CLOCK`, `CALENDAR`, `POMODORO`, `SETTINGS`), táctil y `loop()`. Decide qué hacer con la sesión cuando cambia la orientación (iniciar, pausar, reanudar o bloquear). Redibuja solo cuando cambia lo que se ve (una vez por segundo en el reloj y el Pomodoro; en el calendario y los ajustes, solo al tocar o cada 30 s) y el `loop` espera 30 ms (`LOOP_DELAY_MS`), para reducir el consumo.
+Máquina de estados de pantalla (`CLOCK`, `CALENDAR`, `POMODORO`, `SETTINGS`), táctil y `loop()`. Decide qué hacer con la sesión cuando cambia la orientación (iniciar, pausar, reanudar o bloquear). Redibuja solo cuando cambia lo que se ve (una vez por segundo en el reloj y el Pomodoro; en el calendario y los ajustes, solo al tocar o cada 30 s) y, con batería, la CPU duerme 150 ms entre vueltas (`LOOP_SLEEP_MS`). Ver la sección Energía.
 
 ```
 IMU ──► orientation ──► main ──► pomodoro
@@ -151,6 +156,36 @@ pio device monitor       # monitor serial
 ```
 
 Si `pio` no está en el PATH: `export PATH="$HOME/.platformio/penv/bin:$PATH"`.
+
+## Energía
+
+La app apaga lo que no usa y duerme la CPU cuando no hay nada que hacer:
+
+| Medida | Dónde | Efecto |
+|---|---|---|
+| Sueño ligero entre vueltas del `loop` (150 ms) y hasta el siguiente minuto en modo ahorro | `power.cpp`, `main.cpp` | La CPU pasa de ~20-24 mA activa a < 1 mA dormida. El táctil la despierta. |
+| Salida de 5 V (Grove/bus) apagada si hay batería | `powerUpdate()` | El elevador SY7088 deja de funcionar sin carga. |
+| Amplificador del altavoz solo mientras suena | `sound.cpp` (`Speaker.end()`) | El AW88298 no queda encendido entre sonidos. |
+| Micrófono sin inicializar | `setup()` (`cfg.internal_mic = false`) | El ES7210 no se configura. |
+| CPU a 160 MHz (normal) / 80 MHz (ahorro) | `config.h` | Menos consumo con la CPU activa. |
+
+**Excepciones:** con USB conectado no hay sueño ligero (corta la conexión USB y dificultaría flashear y usar el monitor serial), ni mientras suena una melodía o hay una sincronización Wi-Fi en curso.
+
+**Brillo:** la librería controla la luz de fondo con el voltaje de DLDO1, de 2.5 V (valores 1 a 22) a 3.3 V (255). Los 5 niveles de Ajustes reparten ese rango (`BRIGHTNESS_VALUES`) y la interfaz los muestra como 20 % a 100 %. El color de los píxeles no cambia el consumo en una LCD con retroiluminación: la paleta gris del modo ahorro es para la vista de noche; lo que ahorra es bajar la luz de fondo.
+
+**Cómo medir la autonomía:** el CoreS3 no mide su propia corriente. Prueba de descarga: carga al 100 %, desconecta el USB, deja el equipo 60 min en un modo y compara el voltaje y el porcentaje de Ajustes al inicio y al final.
+
+### Mediciones
+
+Pruebas de descarga de 60 min con batería (sin USB), batería de 500 mAh:
+
+| Modo | Firmware | Resultado en 60 min | Consumo medio aprox. | Autonomía estimada |
+|---|---|---|---|---|
+| Modo ahorro | Antes de las mejoras de energía | — (uso real: duró 2 a 3 h) | ~150 a 200 mA | 2 a 3 h (observado) |
+| Modo ahorro | Con sueño ligero, 5 V apagada, amplificador bajo demanda | 100 % → 93 % (4060 mV) | ~35 mA | ~10 a 14 h |
+| Normal, brillo 40 % (pantalla del reloj) | Con las mejoras de energía | 93 % → 89 % | ~20 a 35 mA (preliminar) | ~12 a 20 h (preliminar) |
+
+La autonomía se extrapola de una sola hora y el porcentaje de la batería no baja de forma lineal: cae más rápido cerca del 100 % y más despacio en la zona media. Por eso las dos pruebas **no son comparables entre sí**: el modo ahorro empezó en 100 % (resultado pesimista) y el normal en 93 % (resultado optimista). Lo más probable es que ambos modos estén en el orden de 12 a 16 h. Para una cifra fiable, hay que hacer una prueba larga en cada modo desde el mismo punto de partida (por ejemplo 90 % a 60 %) y comparar el voltaje.
 
 ## Configuración de la hora
 

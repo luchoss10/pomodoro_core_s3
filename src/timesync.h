@@ -8,3 +8,5 @@ void timeSyncUpdate();
 const char* timeSyncStatus();
 // Cancela una sincronización en curso y apaga el Wi-Fi (p. ej. al entrar en modo ahorro).
 void timeSyncAbort();
+// true mientras hay una sincronización en curso (Wi-Fi encendido): no dormir.
+bool timeSyncBusy();

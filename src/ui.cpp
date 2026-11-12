@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "config.h"
 #include "timesync.h"
+#include "power.h"
 #include <M5CoreS3.h>
 #include <time.h>
 
@@ -53,6 +54,16 @@ static void drawButton(int x, int y, int w, int h, const char* label, uint16_t c
     cv.setTextSize(1);
     cv.drawString(label, x + w / 2, y + h / 2);
     if (id != UiButton::None && nhits < 16) hits[nhits++] = {x, y, w, h, id};
+}
+
+// Botón tenue para el modo ahorro nocturno: sin relleno ni blanco
+static void drawNightButton(int x, int y, int w, int h, const char* label, uint16_t col, UiButton id) {
+    cv.drawRoundRect(x, y, w, h, 6, col);
+    cv.setTextDatum(MC_DATUM);
+    cv.setTextColor(col, BLACK);
+    cv.setTextSize(1);
+    cv.drawString(label, x + w / 2, y + h / 2);
+    if (nhits < 16) hits[nhits++] = {x, y, w, h, id};
 }
 
 static void drawArrow(int x, int y, bool pointLeft, uint16_t col) {
@@ -185,23 +196,28 @@ static void readBattery() {
 }
 
 // Icono de batería 24x12 + porcentaje (ancho total ~55 px). x,y = esquina superior izquierda.
-static void drawBattery(int x, int y) {
+// dim = 0: colores normales; dim != 0: todo en ese color tenue (modo ahorro)
+static void drawBattery(int x, int y, uint16_t dim = 0) {
+    const bool night = dim != 0;
     readBattery();
     const bool known = batteryPct >= 0 && batteryPct <= 100;
-    const uint16_t col = !known ? DARKGREY : (batteryPct >= 40 ? GREEN : (batteryPct >= 20 ? ORANGE : RED));
-    cv.drawRect(x, y, 24, 12, WHITE);
-    cv.fillRect(x + 24, y + 3, 3, 6, WHITE);
+    uint16_t col = !known ? DARKGREY : (batteryPct >= 40 ? GREEN : (batteryPct >= 20 ? ORANGE : RED));
+    const uint16_t fg = night ? dim : WHITE;
+    if (night) col = (known && batteryPct < 20) ? COL_LP_LOW_BAT : dim;
+    cv.drawRect(x, y, 24, 12, fg);
+    cv.fillRect(x + 24, y + 3, 3, 6, fg);
     if (known) cv.fillRect(x + 2, y + 2, (20 * batteryPct) / 100, 8, col);
     if (batteryCharging) {   // rayo
-        cv.drawLine(x + 13, y + 1, x + 8, y + 7, YELLOW);
-        cv.drawLine(x + 8, y + 7, x + 15, y + 7, YELLOW);
-        cv.drawLine(x + 15, y + 7, x + 10, y + 11, YELLOW);
+        const uint16_t bolt = night ? dim : YELLOW;
+        cv.drawLine(x + 13, y + 1, x + 8, y + 7, bolt);
+        cv.drawLine(x + 8, y + 7, x + 15, y + 7, bolt);
+        cv.drawLine(x + 15, y + 7, x + 10, y + 11, bolt);
     }
     char buf[8];
     if (known) snprintf(buf, sizeof(buf), "%d%%", batteryPct);
     else       snprintf(buf, sizeof(buf), "--");
     cv.setTextDatum(ML_DATUM);
-    cv.setTextColor(WHITE, BLACK);
+    cv.setTextColor(fg, BLACK);
     cv.setTextSize(1);
     cv.drawString(buf, x + 31, y + 6);
 }
@@ -312,6 +328,14 @@ static void drawSettingsView(const Settings& s) {
     cv.setTextSize(2);
     cv.drawString("AJUSTES", 160, 12);
 
+    // Diagnóstico de batería (para pruebas de descarga): voltaje y porcentaje
+    char diag[24];
+    snprintf(diag, sizeof(diag), "%dmV %d%%", (int)M5.Power.getBatteryVoltage(), (int)M5.Power.getBatteryLevel());
+    cv.setTextDatum(MR_DATUM);
+    cv.setTextColor(DARKGREY, BLACK);
+    cv.setTextSize(1);
+    cv.drawString(diag, 316, 12);
+
     char buf[8];
     // Giro físico a la izquierda = Pomodoro largo; a la derecha = corto.
     snprintf(buf, sizeof(buf), "%d", s.longMin);
@@ -321,7 +345,7 @@ static void drawSettingsView(const Settings& s) {
     if (s.volumeLevel == 0) snprintf(buf, sizeof(buf), "OFF");
     else                    snprintf(buf, sizeof(buf), "%d/%d", s.volumeLevel, SOUND_LEVELS - 1);
     drawSettingsRow("SONIDO", 2, buf, UiButton::VolMinus, UiButton::VolPlus);
-    snprintf(buf, sizeof(buf), "%d%%", BRIGHTNESS_VALUES[s.brightnessLevel] * 100 / 255);
+    snprintf(buf, sizeof(buf), "%d%%", (s.brightnessLevel + 1) * 20);   // etiqueta por nivel, no por valor
     drawSettingsRow("BRILLO", 3, buf, UiButton::BrightMinus, UiButton::BrightPlus);
 }
 
@@ -331,14 +355,15 @@ static void drawLowPowerView() {
     auto dt = CoreS3.Rtc.getDateTime();
     char buf[8];
     snprintf(buf, sizeof(buf), "%02d:%02d", dt.time.hours, dt.time.minutes);
-    drawBattery(w / 2 - 27, 10);   // arriba al centro; se actualiza con el redibujo por minuto
+    const uint16_t col = LP_TEXT_COLOR[lowPowerPeriod(dt.time.hours)];   // gris según la franja horaria
+    drawBattery(w / 2 - 27, 10, col);    // arriba al centro; se actualiza cada minuto
     cv.setTextDatum(MC_DATUM);
-    cv.setTextColor(WHITE, BLACK);
+    cv.setTextColor(col, BLACK);
     cv.setFont(&fonts::Font8);
     cv.setTextSize(1);
     cv.drawString(buf, w / 2, h / 2 - 10);
     cv.setFont(&fonts::Font0);   // restaurar la fuente por defecto para el resto de vistas
-    drawButton(w - 70, h - 34, 62, 26, "SALIR", DARKGREY, UiButton::ExitLowPower);
+    drawNightButton(w - 70, h - 34, 62, 26, "SALIR", col, UiButton::ExitLowPower);
 }
 
 // Diseño relativo al tamaño: sirve en horizontal (320x240) y vertical (240x320)
